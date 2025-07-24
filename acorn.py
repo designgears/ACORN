@@ -42,24 +42,24 @@ from art import text2art
 class Config:
     """
     Configuration constants for Nintendo Switch file format specifications.
-    
+
     These values are derived from file format documentation
     and reverse engineering of the Switch's filesystem structures.
     https://switchbrew.org/wiki/XCI
     """
-    
+
     # I/O buffer size for streaming operations - 64KB for optimal performance
     BUFFER_SIZE = 65536
-    
+
     # NCA header size - fixed 1024 bytes containing encryption metadata
     NCA_HEADER_SIZE = 0x400
-    
+
     # XCI header offset - gamecard image header starts at 60KB mark
     XCI_HEADER_OFFSET = 0xF000
-    
+
     # HFS0 directory entry size - 64 bytes per file entry in XCI format
     HFS0_ENTRY_SIZE = 0x40
-    
+
     # PFS0 directory entry size - 24 bytes per file entry in NSP format
     PFS0_ENTRY_SIZE = 0x18
 
@@ -67,10 +67,10 @@ class Config:
 class CryptoHandler:
     """
     AES-CTR encryption/decryption handler for Nintendo Content Archives (NCA).
-    
+
     Implements the cryptographic operations used by Nintendo Switch for content
     protection. Uses AES-128-CTR mode with 64-bit counter initialization.
-    
+
     Technical details:
     - Counter mode allows random access to encrypted data
     - Nonce (first 8 bytes) combined with counter (last 8 bytes) forms IV
@@ -81,7 +81,7 @@ class CryptoHandler:
     def __init__(self, key, nonce, offset=0):
         """
         Initialize AES-CTR cipher with Nintendo Switch NCA parameters.
-        
+
         Args:
             key: 16-byte AES-128 encryption key
             nonce: 16-byte nonce value (first 8 bytes used as counter prefix)
@@ -94,10 +94,10 @@ class CryptoHandler:
     def encrypt(self, data):
         """
         Encrypt data using AES-CTR mode.
-        
+
         Args:
             data: Raw bytes to encrypt
-            
+
         Returns:
             Encrypted bytes (same length as input)
         """
@@ -106,12 +106,12 @@ class CryptoHandler:
     def decrypt(self, data):
         """
         Decrypt data using AES-CTR mode.
-        
+
         Note: In CTR mode, encryption and decryption are identical operations.
-        
+
         Args:
             data: Encrypted bytes to decrypt
-            
+
         Returns:
             Decrypted bytes (same length as input)
         """
@@ -120,10 +120,10 @@ class CryptoHandler:
     def seek(self, offset):
         """
         Seek to specific byte offset by recalculating AES counter.
-        
+
         The counter value is derived from the byte offset divided by 16 (AES block size).
         This allows random access to any position in the encrypted stream.
-        
+
         Args:
             offset: Byte offset to seek to (should be 16-byte aligned)
         """
@@ -135,10 +135,10 @@ class CryptoHandler:
 class NCZSection:
     """
     Represents a section descriptor in NCZ (Nintendo Content Archive Zstandard) format.
-    
+
     NCZ files contain compressed NCA data with section metadata that describes
     how to decrypt and decompress individual sections of the original NCA.
-    
+
     Section structure (48 bytes total):
     - offset (8 bytes): Absolute offset in decompressed NCA
     - size (8 bytes): Size of this section in decompressed NCA
@@ -151,20 +151,20 @@ class NCZSection:
     def __init__(self, file_handle):
         """
         Parse NCZ section metadata from file stream.
-        
+
         Args:
             file_handle: Open file handle positioned at section descriptor
         """
         # Read section boundaries in decompressed NCA
         self.offset = self._read_int64(file_handle)
         self.size = self._read_int64(file_handle)
-        
+
         # Encryption method: 1=unencrypted, 3=AES-CTR encrypted
         self.crypto_type = self._read_int64(file_handle)
-        
+
         # Skip reserved padding bytes
         self._read_int64(file_handle)
-        
+
         # Read AES-128 encryption parameters for this section
         self.crypto_key = file_handle.read(16)
         self.crypto_counter = file_handle.read(16)
@@ -172,11 +172,11 @@ class NCZSection:
     def _read_int64(self, file_handle, byteorder="little"):
         """
         Read 64-bit little-endian integer from file stream.
-        
+
         Args:
             file_handle: Open file handle
             byteorder: Byte order for integer parsing
-            
+
         Returns:
             64-bit integer value
         """
@@ -186,12 +186,12 @@ class NCZSection:
 class FileParser:
     """
     Handles parsing of Nintendo Switch file formats and filesystem structures.
-    
+
     Implements parsers for:
     - PFS0 (Package FileSystem 0) - Used in NSP files
     - HFS0 (Hash FileSystem 0) - Used in XCI files
     - XCI gamecard image structure
-    
+
     These parsers extract file metadata including names, offsets, and sizes
     from the respective filesystem headers without loading entire files.
     """
@@ -199,16 +199,16 @@ class FileParser:
     def __init__(self, progress_callback=None):
         """
         Initialize FileParser with optional progress callback.
-        
+
         Args:
             progress_callback: Optional callback function for progress updates
         """
         self.progress_callback = progress_callback
-    
+
     def _print(self, message):
         """
         Print message to console or send to callback if available.
-        
+
         Args:
             message: Message to print/send
         """
@@ -221,7 +221,7 @@ class FileParser:
     def parse_pfs0_offsets(self, filepath, kb_size=8):
         """
         Parse PFS0 filesystem header to extract file metadata from NSP archives.
-        
+
         PFS0 structure:
         - Magic: "PFS0" (4 bytes)
         - File count: Number of files (4 bytes)
@@ -229,11 +229,11 @@ class FileParser:
         - Reserved: Padding (4 bytes)
         - File entries: Array of file descriptors (24 bytes each)
         - String table: Null-terminated filenames
-        
+
         Args:
             filepath: Path to NSP file
             kb_size: Size in KB to read for header parsing
-            
+
         Returns:
             List of [filename, start_offset, end_offset, size] for each file
         """
@@ -283,7 +283,7 @@ class FileParser:
             try:
                 self._print(f"Exception parsing NSP: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Exception parsing NSP: {safe_error}")
 
         return files_list
@@ -291,16 +291,16 @@ class FileParser:
     def parse_xci_offsets(self, filepath, kb_size=8):
         """
         Parse XCI (NX Card Image) file structure to extract secure partition contents.
-        
+
         XCI structure:
         - Header at 0x100: Contains "HEAD" magic and partition table
         - Secure partition offset: Points to HFS0 filesystem containing game data
         - Multiple partitions: update, normal, secure (game data in secure)
-        
+
         Args:
             filepath: Path to XCI file
             kb_size: Size in KB to read for header parsing
-            
+
         Returns:
             List of [filename, start_offset, end_offset, size] from secure partition
         """
@@ -322,7 +322,7 @@ class FileParser:
     def _parse_hfs0_offsets(self, filepath, kb_size, base_offset):
         """
         Parse HFS0 (Hash FileSystem 0) partition to extract file metadata.
-        
+
         HFS0 structure (similar to PFS0 but with SHA-256 hashes):
         - Magic: "HFS0" (4 bytes)
         - File count: Number of files (4 bytes)
@@ -330,12 +330,12 @@ class FileParser:
         - Reserved: Padding (4 bytes)
         - File entries: Array of file descriptors (64 bytes each, includes hash)
         - String table: Null-terminated filenames
-        
+
         Args:
             filepath: Path to file containing HFS0 data
             kb_size: Size in KB to read for header parsing
             base_offset: Absolute offset where HFS0 partition begins
-            
+
         Returns:
             List of [filename, start_offset, end_offset, size] for each file
         """
@@ -386,7 +386,7 @@ class FileParser:
             try:
                 self._print(f"Exception parsing HFS0: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Exception parsing HFS0: {safe_error}")
 
         return files_list
@@ -395,11 +395,11 @@ class FileParser:
 class HeaderGenerator:
     """
     Generates filesystem headers for Nintendo Switch file formats.
-    
+
     Implements header generation for:
     - PFS0 (Package FileSystem 0) - Used in NSP files
     - HFS0 (Hash FileSystem 0) - Used in XCI files
-    
+
     Headers contain file metadata tables and string tables that allow
     the Nintendo Switch OS to locate and access individual files within
     the archive without parsing the entire structure.
@@ -414,18 +414,18 @@ class HeaderGenerator:
     def generate_pfs0_header(self, files, file_sizes, alignment=0x10):
         """
         Generate PFS0 filesystem header for NSP archive creation.
-        
+
         Creates a complete PFS0 header including:
         - Magic signature and metadata
         - File entry table with offsets and sizes
         - String table with null-terminated filenames
         - Proper alignment padding
-        
+
         Args:
             files: List of filenames to include
             file_sizes: List of file sizes (must match files list)
             alignment: Byte alignment for header (default 16 bytes)
-            
+
         Returns:
             Complete PFS0 header as bytes
         """
@@ -453,10 +453,10 @@ class HeaderGenerator:
             header += b"\x00\x00\x00\x00"
 
         try:
-            header += string_table.encode('utf-8')
+            header += string_table.encode("utf-8")
         except UnicodeEncodeError:
             # Handle encoding errors by replacing problematic characters
-            header += string_table.encode('utf-8', errors='replace')
+            header += string_table.encode("utf-8", errors="replace")
         header += remainder * b"\x00"
         return header
 
@@ -465,22 +465,22 @@ class HeaderGenerator:
     ):
         """
         Generate HFS0 filesystem header for XCI partition creation.
-        
+
         HFS0 differs from PFS0 by including SHA-256 hashes for each file,
         providing integrity verification. Used in XCI gamecard images.
-        
+
         Header structure:
         - Magic "HFS0" + file count + string table size + reserved
         - File entries (64 bytes each): offset, size, name_offset, hash_region, reserved, sha256
         - String table with null-terminated filenames
         - 512-byte sector alignment
-        
+
         Args:
             file_list: List of filenames to include
             file_sizes: List of file sizes (defaults to zeros)
             sha_list: List of SHA-256 hashes as hex strings (defaults to zeros)
             hash_regions: List of hash region descriptors (defaults to 0x200)
-            
+
         Returns:
             Tuple of (header_bytes, total_size, sector_multiplier)
         """
@@ -525,10 +525,10 @@ class HeaderGenerator:
             header += bytes.fromhex(sha_list[n])
 
         try:
-            header += string_table.encode('utf-8')
+            header += string_table.encode("utf-8")
         except UnicodeEncodeError:
             # Handle encoding errors by replacing problematic characters
-            header += string_table.encode('utf-8', errors='replace')
+            header += string_table.encode("utf-8", errors="replace")
         header += remainder * b"\x00"
 
         total_size = len(header) + sum(file_sizes)
@@ -538,14 +538,14 @@ class HeaderGenerator:
 class NSPHandler:
     """
     Handles NSP (Nintendo Submission Package) file operations and metadata extraction.
-    
+
     NSP files use the PFS0 filesystem format and contain Nintendo Content Archives (NCA)
     along with metadata files. This class provides methods to:
     - Parse PFS0 headers and file tables
     - Extract CNMT (Content Meta) metadata
     - Read individual files from the archive
     - Handle Unicode filename encoding issues
-    
+
     Technical details:
     - Supports both encrypted and unencrypted NCA files
     - Parses CNMT structures to determine actual content sizes
@@ -555,7 +555,7 @@ class NSPHandler:
     def __init__(self, filepath):
         """
         Initialize NSP handler and parse file structure.
-        
+
         Args:
             filepath: Path to NSP file
         """
@@ -566,10 +566,10 @@ class NSPHandler:
     def _parse_header(self):
         """
         Parse NSP PFS0 header to build file table.
-        
+
         Reads the PFS0 filesystem header and constructs a list of files
         with their names, offsets, and sizes for efficient access.
-        
+
         Raises:
             ValueError: If file is not a valid NSP (missing PFS0 magic)
         """
@@ -616,16 +616,16 @@ class NSPHandler:
     def get_cnmt_content_sizes(self):
         """
         Extract actual content sizes from CNMT (Content Meta) metadata.
-        
+
         CNMT files contain the authoritative file sizes for NCA content,
         which may differ from the sizes in the PFS0 header due to compression
         or padding. This method locates and parses CNMT data to get accurate sizes.
-        
+
         CNMT structure:
         - Header: Title ID, version, content count, etc.
         - Extended header: Variable size based on content type
         - Content entries: Array of NCA descriptors with IDs, types, and sizes
-        
+
         Returns:
             Dictionary mapping NCA filenames to their actual content sizes
         """
@@ -835,11 +835,11 @@ class NSPHandler:
 class XCIHandler:
     """
     Handles XCI (NX Card Image) file operations and gamecard structure parsing.
-    
+
     XCI files represent Nintendo Switch gamecard images using the HFS0 filesystem.
     They contain multiple partitions (update, normal, secure) with the secure
     partition holding the actual game content.
-    
+
     Technical details:
     - Uses HFS0 filesystem with SHA-256 integrity hashes
     - Header located at fixed offset 0xF000 (60KB)
@@ -850,7 +850,7 @@ class XCIHandler:
     def __init__(self, filepath):
         """
         Initialize XCI handler and parse gamecard structure.
-        
+
         Args:
             filepath: Path to XCI file
         """
@@ -861,10 +861,10 @@ class XCIHandler:
     def _parse_header(self):
         """
         Parse XCI gamecard header and extract secure partition file table.
-        
+
         Locates the HFS0 filesystem in the secure partition and builds
         a file table for accessing individual NCA files.
-        
+
         Raises:
             ValueError: If file is not a valid XCI (missing HEAD magic)
         """
@@ -918,12 +918,12 @@ class XCIHandler:
 class CompressionHandler:
     """
     Handles NSZ/XCZ/NCZ compression and decompression operations.
-    
+
     Implements decompression for Nintendo Switch compressed formats:
     - NCZ: Compressed NCA files using Zstandard
     - NSZ: Compressed NSP files (PFS0 with NCZ content)
     - XCZ: Compressed XCI files (HFS0 with NCZ content)
-    
+
     Technical details:
     - Uses Zstandard compression algorithm for optimal compression ratios
     - Maintains section-based encryption for NCZ files
@@ -934,17 +934,17 @@ class CompressionHandler:
     def __init__(self, progress_callback=None):
         """
         Initialize CompressionHandler with optional progress callback.
-        
+
         Args:
             progress_callback: Optional callback function for progress updates
         """
         self.progress_callback = progress_callback
         self.file_parser = FileParser(progress_callback)
-    
+
     def _print(self, message):
         """
         Print message to console or send to callback if available.
-        
+
         Args:
             message: Message to print/send
         """
@@ -957,21 +957,21 @@ class CompressionHandler:
     def decompress_ncz(self, input_path, output_path):
         """
         Decompress NCZ (Nintendo Content Archive Zstandard) to NCA format.
-        
+
         NCZ files contain:
         - Original NCA header (uncompressed, 16KB)
         - Section metadata describing encryption parameters
         - Zstandard-compressed NCA data
-        
+
         The decompression process:
         1. Copy original NCA header
         2. Decompress Zstandard data stream
         3. Re-encrypt sections using stored crypto parameters
-        
+
         Args:
             input_path: Path to NCZ file
             output_path: Path for output NCA file
-            
+
         Returns:
             True if decompression successful, False otherwise
         """
@@ -1005,9 +1005,7 @@ class CompressionHandler:
                         crypto = CryptoHandler(
                             section.crypto_key, section.crypto_counter
                         )
-                        self._decrypt_section(
-                            o, crypto, section.offset, section.size
-                        )
+                        self._decrypt_section(o, crypto, section.offset, section.size)
             return True
         except Exception as e:
             self._print(f"Error decompressing NCZ {input_path}: {e}")
@@ -1016,10 +1014,10 @@ class CompressionHandler:
     def _decrypt_section(self, file_handle, crypto, offset, size):
         """
         Decrypt a specific section of an NCA file using AES-CTR encryption.
-        
+
         Processes the section in chunks to maintain memory efficiency while
         applying the correct AES-CTR encryption parameters for each block.
-        
+
         Args:
             file_handle: Open file handle for read/write operations
             crypto: CryptoHandler instance with section-specific keys
@@ -1046,19 +1044,19 @@ class CompressionHandler:
     def decompress_nsz(self, input_path, output_path, buffer_size=Config.BUFFER_SIZE):
         """
         Decompress NSZ (Nintendo Submission Package Zstandard) to NSP format.
-        
+
         NSZ files contain NSP archives where individual NCZ files are compressed.
         The decompression process:
         1. Parse original NSP structure to locate NCZ files
         2. Decompress each NCZ to temporary NCA files
         3. Generate new PFS0 header with updated file sizes
         4. Rebuild NSP with decompressed content
-        
+
         Args:
             input_path: Path to NSZ file
             output_path: Path for output NSP file
             buffer_size: I/O buffer size for streaming operations
-            
+
         Returns:
             True if decompression successful, False otherwise
         """
@@ -1097,9 +1095,7 @@ class CompressionHandler:
                         temp_nca.close()
                         temp_files.append(temp_nca.name)
 
-                        if self.decompress_ncz(
-                            temp_ncz.name, temp_nca.name
-                        ):
+                        if self.decompress_ncz(temp_ncz.name, temp_nca.name):
                             decompressed_size = os.path.getsize(temp_nca.name)
                             nca_files.append(
                                 (
@@ -1114,7 +1110,9 @@ class CompressionHandler:
                             try:
                                 self._print(f"Failed to decompress {name}")
                             except UnicodeEncodeError:
-                                safe_name = name.encode('ascii', errors='replace').decode('ascii')
+                                safe_name = name.encode(
+                                    "ascii", errors="replace"
+                                ).decode("ascii")
                                 self._print(f"Failed to decompress {safe_name}")
                             file_utils = FileUtils()
                             file_utils.cleanup_temp_files(temp_files)
@@ -1154,15 +1152,17 @@ class CompressionHandler:
             try:
                 self._print(f"NSZ decompression completed: {output_path}")
             except UnicodeEncodeError:
-                safe_path = output_path.encode('ascii', errors='replace').decode('ascii')
+                safe_path = output_path.encode("ascii", errors="replace").decode(
+                    "ascii"
+                )
                 self._print(f"NSZ decompression completed: {safe_path}")
             return True
         except Exception as e:
             try:
                 self._print(f"Error decompressing NSZ {input_path}: {e}")
             except UnicodeEncodeError:
-                safe_path = input_path.encode('ascii', errors='replace').decode('ascii')
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_path = input_path.encode("ascii", errors="replace").decode("ascii")
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error decompressing NSZ {safe_path}: {safe_error}")
             return False
 
@@ -1170,14 +1170,14 @@ class CompressionHandler:
 class XCIGenerator:
     """
     Generates XCI (NX Card Image) headers and gamecard structures.
-    
+
     Creates authentic Nintendo Switch gamecard images by generating:
     - XCI main header with proper magic and metadata
     - HFS0 partition headers (update, normal, secure)
     - Root HFS0 header linking all partitions
     - Cryptographic signatures and integrity hashes
     - Gamecard-specific flags and size information
-    
+
     Technical details:
     - XCI header located at offset 0x100 (256 bytes)
     - Uses HFS0 filesystem with 512-byte sector alignment
@@ -1194,13 +1194,13 @@ class XCIGenerator:
     def generate_random_hex(self, size):
         """
         Generate cryptographically random hexadecimal string.
-        
+
         Used for creating unique identifiers and padding data
         in XCI headers to match authentic gamecard structure.
-        
+
         Args:
             size: Number of random bytes to generate
-            
+
         Returns:
             Hexadecimal string representation of random bytes
         """
@@ -1209,10 +1209,10 @@ class XCIGenerator:
     def get_gamecard_size(self, bytes_size):
         """
         Determine appropriate gamecard size and firmware version based on content size.
-        
+
         Nintendo Switch gamecards come in specific sizes with corresponding
         hardware identifiers and minimum firmware requirements.
-        
+
         Gamecard size mapping:
         - 32GB: 0xE3 (requires firmware 10.0.0+)
         - 16GB: 0xE2 (requires firmware 10.0.0+)
@@ -1221,10 +1221,10 @@ class XCIGenerator:
         - 2GB:  0xF0 (requires firmware 11.0.0+)
         - 1GB:  0xF8 (requires firmware 11.0.0+)
         - <1GB: 0xFA (requires firmware 11.0.0+)
-        
+
         Args:
             bytes_size: Total content size in bytes
-            
+
         Returns:
             Tuple of (gamecard_id, firmware_version_hex)
         """
@@ -1233,11 +1233,11 @@ class XCIGenerator:
         size_mappings = [
             (32, 0xE3, "1000a100"),  # 32GB, FW 10.0.0+
             (16, 0xE2, "1000a100"),  # 16GB, FW 10.0.0+
-            (8, 0xE1, "1000a100"),   # 8GB,  FW 10.0.0+
-            (4, 0xE0, "1000a100"),   # 4GB,  FW 10.0.0+
-            (2, 0xF0, "1100a100"),   # 2GB,  FW 11.0.0+
-            (1, 0xF8, "1100a100"),   # 1GB,  FW 11.0.0+
-            (0, 0xFA, "1100a100"),   # <1GB, FW 11.0.0+
+            (8, 0xE1, "1000a100"),  # 8GB,  FW 10.0.0+
+            (4, 0xE0, "1000a100"),  # 4GB,  FW 10.0.0+
+            (2, 0xF0, "1100a100"),  # 2GB,  FW 11.0.0+
+            (1, 0xF8, "1100a100"),  # 1GB,  FW 11.0.0+
+            (0, 0xFA, "1100a100"),  # <1GB, FW 11.0.0+
         ]
 
         for threshold, card, firm_ver in size_mappings:
@@ -1249,18 +1249,18 @@ class XCIGenerator:
     def get_encrypted_gameinfo(self, bytes_size):
         """
         Generate encrypted gamecard information structure.
-        
+
         Creates the GameCardInfo structure containing hardware-specific
         parameters for gamecard access timing, firmware requirements,
         and cryptographic identifiers.
-        
+
         The structure varies based on gamecard size:
         - 4GB+ cards: Use high-capacity parameters
         - <4GB cards: Use standard capacity parameters
-        
+
         Args:
             bytes_size: Total content size in bytes
-            
+
         Returns:
             Binary gamecard info structure (70 bytes)
         """
@@ -1320,24 +1320,24 @@ class XCIGenerator:
     def generate_xci_header(self, file_list, file_sizes, hash_list):
         """
         Generate complete XCI header structure with all required components.
-        
+
         Creates a full XCI gamecard image header including:
         1. Empty update and normal partition headers
         2. Secure partition HFS0 header containing game files
         3. Root HFS0 header linking all three partitions
         4. XCI main header with signatures and metadata
-        
+
         The XCI structure:
         - Offset 0x0000: Signature and padding (60KB)
         - Offset 0xF000: XCI header (256 bytes)
         - Offset 0xF100: Root HFS0 header
         - Partition data follows with 512-byte alignment
-        
+
         Args:
             file_list: List of filenames in secure partition
             file_sizes: List of file sizes in bytes
             hash_list: List of SHA-256 hashes for integrity
-            
+
         Returns:
             Complete XCI header bytes ready for writing
         """
@@ -1447,13 +1447,13 @@ class XCIGenerator:
 class FileUtils:
     """
     File utility functions for Nintendo Switch file operations.
-    
+
     Provides essential file manipulation utilities including:
     - Streaming file content copying with offset support
     - Temporary file cleanup and directory management
     - NCA gamecard flag modification for XCI compatibility
     - Automatic decompression of compressed formats
-    
+
     All operations are designed for memory efficiency when handling
     large Nintendo Switch files (up to 32GB).
     """
@@ -1469,11 +1469,11 @@ class FileUtils:
     ):
         """
         Copy specific portion of file content using streaming I/O.
-        
+
         Efficiently copies data from a source file at a specific offset
         to a destination file handle, using buffered reads to minimize
         memory usage for large files.
-        
+
         Args:
             src_path: Path to source file
             dst_file: Open file handle for destination
@@ -1496,11 +1496,11 @@ class FileUtils:
     def cleanup_temp_files(self, temp_files):
         """
         Clean up temporary files and empty directories.
-        
+
         Safely removes temporary files created during processing
         and cleans up empty temporary directories to prevent
         disk space accumulation.
-        
+
         Args:
             temp_files: List of temporary file paths to remove
         """
@@ -1520,11 +1520,11 @@ class FileUtils:
     def set_nca_gamecard_flag(self, nca_path):
         """
         Set gamecard flag in NCA header for XCI compatibility.
-        
+
         Modifies the NCA header at offset 0x204 to set the gamecard flag,
         which is required for proper XCI gamecard image functionality.
         This flag indicates the content is intended for gamecard distribution.
-        
+
         Args:
             nca_path: Path to NCA file to modify
         """
@@ -1543,15 +1543,15 @@ class FileUtils:
     def decompress_file(self, filepath, buffer_size=Config.BUFFER_SIZE):
         """
         Decompress a compressed Nintendo Switch file format.
-        
+
         Automatically detects and decompresses NSZ, XCZ, or NCZ files
         to their original NSP, XCI, or NCA formats respectively.
         Creates temporary files for decompressed output.
-        
+
         Args:
             filepath: Path to compressed file
             buffer_size: I/O buffer size for decompression
-            
+
         Returns:
             Path to decompressed file (or original if not compressed)
         """
@@ -1579,23 +1579,23 @@ class FileUtils:
 class Acorn:
     """
     Main ACORN application class for Nintendo Switch file operations.
-    
+
     ACORN (Advanced Content Operations and Repackaging for Nintendo)
     provides comprehensive tools for:
     - Decompressing NSZ/XCZ/NCZ files to NSP/XCI/NCA
     - Creating multi-content XCI gamecard images
     - Repackaging and converting between formats
     - Extracting metadata and content information
-    
+
     The application uses a modular architecture with specialized handlers
     for different file formats and operations, ensuring memory efficiency
     and proper handling of large Nintendo Switch content files.
     """
-    
+
     def get_ascii_banner(self):
         """
         Generate ASCII art banner for application branding.
-        
+
         Returns:
             ASCII art string representation of "ACORN"
         """
@@ -1607,20 +1607,20 @@ class Acorn:
         """
         self.parser = self._create_argument_parser()
         self.progress_callback = None
-    
+
     def set_progress_callback(self, callback):
         """
         Set a callback function to receive progress updates.
-        
+
         Args:
             callback: Function that accepts a string message
         """
         self.progress_callback = callback
-    
+
     def _print(self, message):
         """
         Print message to console or send to callback if available.
-        
+
         Args:
             message: Message to print/send
         """
@@ -1633,25 +1633,33 @@ class Acorn:
     def _create_argument_parser(self):
         """
         Create and configure command-line argument parser.
-        
+
         Sets up command-line options specifically for multi-XCI creation,
         with simplified interface focused on gamecard image generation.
-        
+
         Returns:
             Configured ArgumentParser instance
         """
         parser = argparse.ArgumentParser(
             description=f"Acorn - Multi-XCI gamecard image creator for Nintendo Switch",
-            formatter_class=argparse.RawDescriptionHelpFormatter
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         # Custom usage without duplicating the banner in help output
         # Remove the default 'usage: ' prefix
-        parser.usage = parser.format_usage().replace('usage: ', '')
+        parser.usage = parser.format_usage().replace("usage: ", "")
 
-        parser.add_argument("files", nargs="*", help="Input NSP/NCA/NSZ/NCZ files to package into multi-XCI")
-        parser.add_argument("-o", "--ofolder", help="Set output folder (default: current directory)")
         parser.add_argument(
-            "-tfile", "--text_file", help="Input text file with file list (one file per line)"
+            "files",
+            nargs="*",
+            help="Input NSP/NCA/NSZ/NCZ files to package into multi-XCI",
+        )
+        parser.add_argument(
+            "-o", "--ofolder", help="Set output folder (default: current directory)"
+        )
+        parser.add_argument(
+            "-tfile",
+            "--text_file",
+            help="Input text file with file list (one file per line)",
         )
         parser.add_argument(
             "-b",
@@ -1666,14 +1674,14 @@ class Acorn:
     def run(self, args=None):
         """
         Main application entry point for multi-XCI creation.
-        
+
         Parses command-line arguments and creates multi-XCI gamecard images
         from the provided Nintendo Switch content files.
         Provides comprehensive error handling with Unicode-safe output.
-        
+
         Args:
             args: Optional command-line arguments (for testing)
-            
+
         Returns:
             Exit code (0 for success, 1 for error)
         """
@@ -1684,14 +1692,14 @@ class Acorn:
             if not args.files and not args.text_file:
                 self.parser.print_help()
                 return 0
-            
+
             # Create multi-XCI from input files
             return self._handle_multi_xci_creation(args)
         except Exception as e:
             try:
                 self._print(f"Error: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error: {safe_error}")
             if not self.progress_callback:
                 traceback.print_exc()
@@ -1700,10 +1708,10 @@ class Acorn:
     def _get_output_folder(self, args):
         """
         Determine output folder from arguments or create default.
-        
+
         Args:
             args: Parsed command-line arguments
-            
+
         Returns:
             Path to output folder
         """
@@ -1728,11 +1736,9 @@ class Acorn:
             try:
                 self._print(f"Error reading manifest file: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error reading manifest file: {safe_error}")
         return file_list
-
-
 
     def _handle_multi_xci_creation(self, args):
         """Handle multi-XCI creation from input files"""
@@ -1779,9 +1785,13 @@ class Acorn:
                     self._print(f"Filename: {filename}.xci")
                 except UnicodeEncodeError:
                     # Handle Unicode characters in console output
-                    safe_filename = filename.encode('ascii', errors='replace').decode('ascii')
+                    safe_filename = filename.encode("ascii", errors="replace").decode(
+                        "ascii"
+                    )
                     self._print(f"Filename: {safe_filename}.xci")
-                    self._print("Warning: Some Unicode characters were replaced in console output")
+                    self._print(
+                        "Warning: Some Unicode characters were replaced in console output"
+                    )
 
             # Phase 3: Content Analysis
             all_files = []
@@ -1857,7 +1867,9 @@ class Acorn:
                     try:
                         self._print(f"  {filename}: {sha[:16]}...")
                     except UnicodeEncodeError:
-                        safe_filename = filename.encode('ascii', errors='replace').decode('ascii')
+                        safe_filename = filename.encode(
+                            "ascii", errors="replace"
+                        ).decode("ascii")
                         self._print(f"  {safe_filename}: {sha[:16]}...")
 
             # Generate XCI header
@@ -1871,14 +1883,18 @@ class Acorn:
                 try:
                     self._print(f"Writing XCI header to {outfile}...")
                 except UnicodeEncodeError:
-                    safe_outfile = outfile.encode('ascii', errors='replace').decode('ascii')
+                    safe_outfile = outfile.encode("ascii", errors="replace").decode(
+                        "ascii"
+                    )
                     self._print(f"Writing XCI header to {safe_outfile}...")
 
                 # Write header components
                 for component in header_components[:8]:
                     xci_file.write(component)
 
-                self._print("XCI header written successfully, now writing content files...")
+                self._print(
+                    "XCI header written successfully, now writing content files..."
+                )
 
                 # Create file mapping
                 file_mapping = {}
@@ -1959,7 +1975,7 @@ class Acorn:
             try:
                 self._print(f"XCI file creation completed successfully: {outfile}")
             except UnicodeEncodeError:
-                safe_outfile = outfile.encode('ascii', errors='replace').decode('ascii')
+                safe_outfile = outfile.encode("ascii", errors="replace").decode("ascii")
                 self._print(f"XCI file creation completed successfully: {safe_outfile}")
 
             if temp_files:
@@ -1972,7 +1988,7 @@ class Acorn:
             try:
                 self._print(f"Error creating XCI file: {str(e)}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error creating XCI file: {safe_error}")
             if not self.progress_callback:
                 traceback.print_exc()
@@ -1999,7 +2015,7 @@ class Acorn:
             updfile = ""
             dlcfile = ""
             ctitl = "UNKNOWN"
-            
+
             # Process each file to extract metadata
             for filepath in file_list:
                 if filepath.endswith(".nsp"):
@@ -2010,17 +2026,20 @@ class Acorn:
                             if file_entry["name"].endswith(".cnmt.nca"):
                                 # Extract basic info from filename patterns
                                 basename = os.path.basename(filepath)
-                                
+
                                 # Try to extract title ID from filename
                                 import re
-                                tid_match = re.search(r'\[([0-9A-Fa-f]{16})\]', basename)
+
+                                tid_match = re.search(
+                                    r"\[([0-9A-Fa-f]{16})\]", basename
+                                )
                                 if tid_match:
                                     titleid = tid_match.group(1).upper()
-                                    
+
                                     # Try to extract version
-                                    ver_match = re.search(r'\[v(\d+)\]', basename)
+                                    ver_match = re.search(r"\[v(\d+)\]", basename)
                                     version = ver_match.group(1) if ver_match else "0"
-                                    
+
                                     # Determine content type based on title ID
                                     if titleid.endswith("000"):
                                         # Base game content (main application)
@@ -2046,57 +2065,71 @@ class Acorn:
                                 break
                     except Exception:
                         pass
-            
+
             # Generate content count tag
             bctag = f"{basecount}G" if basecount != 0 else ""
-            updtag = f"+{updcount}U" if updcount != 0 and bctag != "" else f"{updcount}U" if updcount != 0 else ""
-            dctag = f"+{dlccount}D" if dlccount != 0 and (bctag != "" or updtag != "") else f"{dlccount}D" if dlccount != 0 else ""
+            updtag = (
+                f"+{updcount}U"
+                if updcount != 0 and bctag != ""
+                else f"{updcount}U" if updcount != 0 else ""
+            )
+            dctag = (
+                f"+{dlccount}D"
+                if dlccount != 0 and (bctag != "" or updtag != "")
+                else f"{dlccount}D" if dlccount != 0 else ""
+            )
             ccount = f"({bctag}{updtag}{dctag})" if bctag or updtag or dctag else ""
-            
+
             # Simplify count for single content
             if ccount in ["(1G)", "(1U)", "(1D)"]:
                 ccount = ""
-            
+
             # Extract game title from CONTROL NCA instead of filename
             if basefile:
-                ctitl = self._extract_title_from_nca(basefile) or self._extract_title_from_filename(basefile)
+                ctitl = self._extract_title_from_nca(
+                    basefile
+                ) or self._extract_title_from_filename(basefile)
                 target_id = f"[{baseid}]"
                 target_ver = updver if updver else basever
             elif updfile:
-                ctitl = self._extract_title_from_nca(updfile) or self._extract_title_from_filename(updfile)
+                ctitl = self._extract_title_from_nca(
+                    updfile
+                ) or self._extract_title_from_filename(updfile)
                 target_id = f"[{updid}]"
                 target_ver = updver
             elif dlcfile:
-                ctitl = self._extract_title_from_nca(dlcfile) or self._extract_title_from_filename(dlcfile)
+                ctitl = self._extract_title_from_nca(
+                    dlcfile
+                ) or self._extract_title_from_filename(dlcfile)
                 target_id = f"[{dlcid}]"
                 target_ver = dlcver
             else:
                 return None
-            
+
             # Add mgame indicator if multiple base games
-            mgame = '(mgame)' if basecount > 1 else ''
-            
+            mgame = "(mgame)" if basecount > 1 else ""
+
             # Build final filename
             endname = f"{ctitl} {target_id}{target_ver} {ccount} {mgame}".strip()
-            
+
             # Clean up filename
             endname = self._clean_filename(endname)
-            
+
             return endname
-            
+
         except Exception as e:
             try:
                 self._print(f"Error generating filename: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error generating filename: {safe_error}")
             return None
-    
+
     def _extract_title_from_nca(self, filepath):
         """Extract game title from CONTROL NCA file like squirrel.py"""
         try:
             nsp = NSPHandler(filepath)
-            
+
             # Find CONTROL NCA file
             control_nca_data = None
             for file_entry in nsp.files:
@@ -2105,26 +2138,26 @@ class Acorn:
                     nca_data = nsp.read_file(file_entry["name"])
                     if len(nca_data) >= 0x220:
                         # Check content type at offset 0x20C (CONTROL = 1)
-                        content_type = int.from_bytes(nca_data[0x20C:0x20D], 'little')
+                        content_type = int.from_bytes(nca_data[0x20C:0x20D], "little")
                         if content_type == 1:  # CONTROL NCA contains metadata and icons
                             control_nca_data = nca_data
                             break
-            
+
             if not control_nca_data:
                 return None
-            
+
             # Extract title from CONTROL NCA language blocks
             title = self._extract_title_from_control_nca(control_nca_data)
             return title if title and title != "UNKNOWN" else None
-            
+
         except Exception as e:
             try:
                 self._print(f"Error extracting title from NCA: {e}")
             except UnicodeEncodeError:
-                safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
+                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
                 self._print(f"Error extracting title from NCA: {safe_error}")
             return None
-    
+
     def _extract_title_from_control_nca(self, nca_data):
         """Extract title from CONTROL NCA language blocks"""
         try:
@@ -2144,110 +2177,137 @@ class Acorn:
                 0x15600,  # Russian title offset
                 0x15800,  # Chinese (Traditional) title offset
             ]
-            
+
             for offset in language_offsets:
                 try:
                     if offset + 0x200 <= len(nca_data):
                         # Read title (first 0x200 bytes of language block)
-                        title_bytes = nca_data[offset:offset + 0x200]
-                        
+                        title_bytes = nca_data[offset : offset + 0x200]
+
                         # Find null terminator
-                        null_pos = title_bytes.find(b'\x00')
+                        null_pos = title_bytes.find(b"\x00")
                         if null_pos > 0:
                             title_bytes = title_bytes[:null_pos]
-                        
+
                         # Decode UTF-8 title from NACP data
-                        title = title_bytes.decode('utf-8', errors='ignore').strip()
-                        
+                        title = title_bytes.decode("utf-8", errors="ignore").strip()
+
                         if title and len(title) > 1 and title != "UNKNOWN":
                             # Clean up the title
-                            title = title.replace('\x00', '').strip()
+                            title = title.replace("\x00", "").strip()
                             if title:
                                 return title
                 except Exception:
                     continue
-            
+
             return "UNKNOWN"
-            
+
         except Exception:
             return "UNKNOWN"
-    
+
     def _extract_title_from_filename(self, filepath):
         """Extract game title from filename"""
         try:
             basename = os.path.basename(filepath)
             # Remove file extension
             title = os.path.splitext(basename)[0]
-            
+
             # Remove common patterns like [titleid], [version], etc.
             import re
-            title = re.sub(r'\[[^\]]*\]', '', title)  # Remove [brackets]
-            title = re.sub(r'\([^\)]*\)', '', title)  # Remove (parentheses)
-            title = re.sub(r'\s+', ' ', title)  # Normalize whitespace characters
+
+            title = re.sub(r"\[[^\]]*\]", "", title)  # Remove [brackets]
+            title = re.sub(r"\([^\)]*\)", "", title)  # Remove (parentheses)
+            title = re.sub(r"\s+", " ", title)  # Normalize whitespace characters
             title = title.strip()
-            
+
             # Remove common suffixes
-            suffixes = ['.nsp', '.xci', '.nsz', '.xcz']
+            suffixes = [".nsp", ".xci", ".nsz", ".xcz"]
             for suffix in suffixes:
                 if title.lower().endswith(suffix):
-                    title = title[:-len(suffix)]
-            
+                    title = title[: -len(suffix)]
+
             return title if title else "UNKNOWN"
         except Exception:
             return "UNKNOWN"
-    
+
     def _clean_filename(self, filename):
         """Clean filename like squirrel.py does"""
         import re
-        
+
         # Remove invalid characters
-        filename = re.sub(r'[/\\:*?]+', '', filename)
-        filename = re.sub(r'[™©®`~^´ªº¢#£€¥$ƒ±¬½¼♡«»±•²‰œæÆ³☆<<>>|]', '', filename)
-        
+        filename = re.sub(r"[/\\:*?]+", "", filename)
+        filename = re.sub(r"[™©®`~^´ªº¢#£€¥$ƒ±¬½¼♡«»±•²‰œæÆ³☆<<>>|]", "", filename)
+
         # Replace Roman numerals
         replacements = {
-            'Ⅰ': 'I', 'Ⅱ': 'II', 'Ⅲ': 'III', 'Ⅳ': 'IV', 'Ⅴ': 'V',
-            'Ⅵ': 'VI', 'Ⅶ': 'VII', 'Ⅷ': 'VIII', 'Ⅸ': 'IX', 'Ⅹ': 'X',
-            'Ⅺ': 'XI', 'Ⅻ': 'XII', 'Ⅼ': 'L', 'Ⅽ': 'C', 'Ⅾ': 'D', 'Ⅿ': 'M',
-            '—': '-', '√': 'Root'
+            "Ⅰ": "I",
+            "Ⅱ": "II",
+            "Ⅲ": "III",
+            "Ⅳ": "IV",
+            "Ⅴ": "V",
+            "Ⅵ": "VI",
+            "Ⅶ": "VII",
+            "Ⅷ": "VIII",
+            "Ⅸ": "IX",
+            "Ⅹ": "X",
+            "Ⅺ": "XI",
+            "Ⅻ": "XII",
+            "Ⅼ": "L",
+            "Ⅽ": "C",
+            "Ⅾ": "D",
+            "Ⅿ": "M",
+            "—": "-",
+            "√": "Root",
         }
-        
+
         for old, new in replacements.items():
             filename = filename.replace(old, new)
-        
+
         # Replace accented characters
         accents = {
-            'àâá@äå': 'a', 'ÀÂÁÄÅ': 'A', 'èêéë': 'e', 'ÈÊÉË': 'E',
-            'ìîíï': 'i', 'ÌÎÍÏ': 'I', 'òôóöø': 'o', 'ÒÔÓÖØ': 'O',
-            'ùûúü': 'u', 'ÙÛÚÜ': 'U'
+            "àâá@äå": "a",
+            "ÀÂÁÄÅ": "A",
+            "èêéë": "e",
+            "ÈÊÉË": "E",
+            "ìîíï": "i",
+            "ÌÎÍÏ": "I",
+            "òôóöø": "o",
+            "ÒÔÓÖØ": "O",
+            "ùûúü": "u",
+            "ÙÛÚÜ": "U",
         }
-        
+
         for chars, replacement in accents.items():
             for char in chars:
                 filename = filename.replace(char, replacement)
-        
+
         # Clean up quotes and spaces
         filename = filename.replace("'", "'")
-        filename = re.sub(r'\s+', ' ', filename)
+        filename = re.sub(r"\s+", " ", filename)
         filename = filename.strip()
-        
+
         return filename
 
 
-def create_multi_xci(files, output_folder=None, text_file=None, buffer_size=None, progress_callback=None):
+def create_multi_xci(
+    files, output_folder=None, text_file=None, buffer_size=None, progress_callback=None
+):
     """Create a multi-content XCI file from a list of files."""
     app = Acorn()
     if progress_callback:
         app.set_progress_callback(progress_callback)
     args = [
-        '--ofolder', output_folder or '.',
-        '--buffer', str(buffer_size or Config.BUFFER_SIZE)
+        "--ofolder",
+        output_folder or ".",
+        "--buffer",
+        str(buffer_size or Config.BUFFER_SIZE),
     ]
     if text_file:
-        args.extend(['--text_file', text_file])
+        args.extend(["--text_file", text_file])
     args.extend(files)
-    
+
     return app.run(args)
+
 
 def main():
     """Main entry point"""

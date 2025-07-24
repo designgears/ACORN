@@ -106,8 +106,8 @@ ACORN is built using publicly available documentation and open-source libraries.
 - Open-source implementations of Nintendo Switch file parsing techniques
 - Community-developed compression standards for Nintendo Switch files
 
-*ACORN is developed for educational purposes and to support legitimate backup and archival use cases.*
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+*ACORN is developed for educational purposes and to support legitimate backup and archival use cases.*

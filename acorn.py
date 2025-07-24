@@ -169,8 +169,7 @@ class NCZSection:
         self.crypto_key = file_handle.read(16)
         self.crypto_counter = file_handle.read(16)
 
-    @staticmethod
-    def _read_int64(file_handle, byteorder="little"):
+    def _read_int64(self, file_handle, byteorder="little"):
         """
         Read 64-bit little-endian integer from file stream.
         
@@ -197,8 +196,29 @@ class FileParser:
     from the respective filesystem headers without loading entire files.
     """
 
-    @staticmethod
-    def parse_pfs0_offsets(filepath, kb_size=8):
+    def __init__(self, progress_callback=None):
+        """
+        Initialize FileParser with optional progress callback.
+        
+        Args:
+            progress_callback: Optional callback function for progress updates
+        """
+        self.progress_callback = progress_callback
+    
+    def _print(self, message):
+        """
+        Print message to console or send to callback if available.
+        
+        Args:
+            message: Message to print/send
+        """
+        if self.progress_callback:
+            self.progress_callback(message + "\n")
+        else:
+            print(message)
+            sys.stdout.flush()
+
+    def parse_pfs0_offsets(self, filepath, kb_size=8):
         """
         Parse PFS0 filesystem header to extract file metadata from NSP archives.
         
@@ -261,15 +281,14 @@ class FileParser:
             files_list.reverse()
         except Exception as e:
             try:
-                print(f"Exception parsing NSP: {e}")
+                self._print(f"Exception parsing NSP: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Exception parsing NSP: {safe_error}")
+                self._print(f"Exception parsing NSP: {safe_error}")
 
         return files_list
 
-    @staticmethod
-    def parse_xci_offsets(filepath, kb_size=8):
+    def parse_xci_offsets(self, filepath, kb_size=8):
         """
         Parse XCI (NX Card Image) file structure to extract secure partition contents.
         
@@ -295,13 +314,12 @@ class FileParser:
 
                 # Read secure partition offset (in 512-byte sectors)
                 secure_offset = int.from_bytes(f.read(4), byteorder="little") * 0x200
-                return FileParser._parse_hfs0_offsets(filepath, kb_size, secure_offset)
+                return self._parse_hfs0_offsets(filepath, kb_size, secure_offset)
         except Exception as e:
-            print(f"Exception reading XCI: {e}")
+            self._print(f"Exception reading XCI: {e}")
             return []
 
-    @staticmethod
-    def _parse_hfs0_offsets(filepath, kb_size, base_offset):
+    def _parse_hfs0_offsets(self, filepath, kb_size, base_offset):
         """
         Parse HFS0 (Hash FileSystem 0) partition to extract file metadata.
         
@@ -366,10 +384,10 @@ class FileParser:
             files_list.reverse()
         except Exception as e:
             try:
-                print(f"Exception parsing HFS0: {e}")
+                self._print(f"Exception parsing HFS0: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Exception parsing HFS0: {safe_error}")
+                self._print(f"Exception parsing HFS0: {safe_error}")
 
         return files_list
 
@@ -387,8 +405,13 @@ class HeaderGenerator:
     the archive without parsing the entire structure.
     """
 
-    @staticmethod
-    def generate_pfs0_header(files, file_sizes, alignment=0x10):
+    def __init__(self):
+        """
+        Initialize HeaderGenerator.
+        """
+        pass
+
+    def generate_pfs0_header(self, files, file_sizes, alignment=0x10):
         """
         Generate PFS0 filesystem header for NSP archive creation.
         
@@ -437,9 +460,8 @@ class HeaderGenerator:
         header += remainder * b"\x00"
         return header
 
-    @staticmethod
     def generate_hfs0_header(
-        file_list, file_sizes=None, sha_list=None, hash_regions=None
+        self, file_list, file_sizes=None, sha_list=None, hash_regions=None
     ):
         """
         Generate HFS0 filesystem header for XCI partition creation.
@@ -909,8 +931,30 @@ class CompressionHandler:
     - Supports streaming decompression for memory efficiency
     """
 
-    @staticmethod
-    def decompress_ncz(input_path, output_path):
+    def __init__(self, progress_callback=None):
+        """
+        Initialize CompressionHandler with optional progress callback.
+        
+        Args:
+            progress_callback: Optional callback function for progress updates
+        """
+        self.progress_callback = progress_callback
+        self.file_parser = FileParser(progress_callback)
+    
+    def _print(self, message):
+        """
+        Print message to console or send to callback if available.
+        
+        Args:
+            message: Message to print/send
+        """
+        if self.progress_callback:
+            self.progress_callback(message + "\n")
+        else:
+            print(message)
+            sys.stdout.flush()
+
+    def decompress_ncz(self, input_path, output_path):
         """
         Decompress NCZ (Nintendo Content Archive Zstandard) to NCA format.
         
@@ -934,8 +978,9 @@ class CompressionHandler:
         try:
             with open(input_path, "rb") as f:
                 header = f.read(0x4000)
-                magic = NCZSection._read_int64(f)
-                section_count = NCZSection._read_int64(f)
+                ncz_section = NCZSection()
+                magic = ncz_section._read_int64(f)
+                section_count = ncz_section._read_int64(f)
                 sections = [NCZSection(f) for _ in range(section_count)]
 
                 dctx = zstandard.ZstdDecompressor()
@@ -960,16 +1005,15 @@ class CompressionHandler:
                         crypto = CryptoHandler(
                             section.crypto_key, section.crypto_counter
                         )
-                        CompressionHandler._decrypt_section(
+                        self._decrypt_section(
                             o, crypto, section.offset, section.size
                         )
             return True
         except Exception as e:
-            print(f"Error decompressing NCZ {input_path}: {e}")
+            self._print(f"Error decompressing NCZ {input_path}: {e}")
             return False
 
-    @staticmethod
-    def _decrypt_section(file_handle, crypto, offset, size):
+    def _decrypt_section(self, file_handle, crypto, offset, size):
         """
         Decrypt a specific section of an NCA file using AES-CTR encryption.
         
@@ -999,8 +1043,7 @@ class CompressionHandler:
             file_handle.write(crypto.encrypt(buf))
             current_pos += chunk_size
 
-    @staticmethod
-    def decompress_nsz(input_path, output_path, buffer_size=Config.BUFFER_SIZE):
+    def decompress_nsz(self, input_path, output_path, buffer_size=Config.BUFFER_SIZE):
         """
         Decompress NSZ (Nintendo Submission Package Zstandard) to NSP format.
         
@@ -1020,11 +1063,11 @@ class CompressionHandler:
             True if decompression successful, False otherwise
         """
         try:
-            print(f"Decompressing NSZ: {input_path} -> {output_path}")
+            self._print(f"Decompressing NSZ: {input_path} -> {output_path}")
 
-            files_list = FileParser.parse_pfs0_offsets(input_path)
+            files_list = self.file_parser.parse_pfs0_offsets(input_path)
             if not files_list:
-                print("Failed to parse NSP structure")
+                self._print("Failed to parse NSP structure")
                 return False
 
             nca_files = []
@@ -1054,7 +1097,7 @@ class CompressionHandler:
                         temp_nca.close()
                         temp_files.append(temp_nca.name)
 
-                        if CompressionHandler.decompress_ncz(
+                        if self.decompress_ncz(
                             temp_ncz.name, temp_nca.name
                         ):
                             decompressed_size = os.path.getsize(temp_nca.name)
@@ -1069,18 +1112,20 @@ class CompressionHandler:
                             file_sizes.append(decompressed_size)
                         else:
                             try:
-                                print(f"Failed to decompress {name}")
+                                self._print(f"Failed to decompress {name}")
                             except UnicodeEncodeError:
                                 safe_name = name.encode('ascii', errors='replace').decode('ascii')
-                                print(f"Failed to decompress {safe_name}")
-                            FileUtils.cleanup_temp_files(temp_files)
+                                self._print(f"Failed to decompress {safe_name}")
+                            file_utils = FileUtils()
+                            file_utils.cleanup_temp_files(temp_files)
                             return False
                     else:
                         nca_files.append((name, None, size, False))
                         file_sizes.append(size)
 
             file_names = [info[0] for info in nca_files]
-            header = HeaderGenerator.generate_pfs0_header(file_names, file_sizes)
+            header_gen = HeaderGenerator()
+            header = header_gen.generate_pfs0_header(file_names, file_sizes)
 
             with open(output_path, "wb") as out_f:
                 out_f.write(header)
@@ -1099,24 +1144,26 @@ class CompressionHandler:
                         else:
                             file_info = files_list[i]
                             start_offset = file_info[1]
-                            FileUtils.copy_file_content(
+                            file_utils = FileUtils()
+                            file_utils.copy_file_content(
                                 input_path, out_f, start_offset, size, buffer_size
                             )
 
-            FileUtils.cleanup_temp_files(temp_files)
+            file_utils = FileUtils()
+            file_utils.cleanup_temp_files(temp_files)
             try:
-                print(f"NSZ decompression completed: {output_path}")
+                self._print(f"NSZ decompression completed: {output_path}")
             except UnicodeEncodeError:
                 safe_path = output_path.encode('ascii', errors='replace').decode('ascii')
-                print(f"NSZ decompression completed: {safe_path}")
+                self._print(f"NSZ decompression completed: {safe_path}")
             return True
         except Exception as e:
             try:
-                print(f"Error decompressing NSZ {input_path}: {e}")
+                self._print(f"Error decompressing NSZ {input_path}: {e}")
             except UnicodeEncodeError:
                 safe_path = input_path.encode('ascii', errors='replace').decode('ascii')
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error decompressing NSZ {safe_path}: {safe_error}")
+                self._print(f"Error decompressing NSZ {safe_path}: {safe_error}")
             return False
 
 
@@ -1138,8 +1185,13 @@ class XCIGenerator:
     - Supports gamecard sizes from 1GB to 32GB
     """
 
-    @staticmethod
-    def generate_random_hex(size):
+    def __init__(self):
+        """
+        Initialize XCIGenerator.
+        """
+        self.header_gen = HeaderGenerator()
+
+    def generate_random_hex(self, size):
         """
         Generate cryptographically random hexadecimal string.
         
@@ -1154,8 +1206,7 @@ class XCIGenerator:
         """
         return "".join(random.choice("0123456789ABCDEF") for _ in range(size * 2))
 
-    @staticmethod
-    def get_gamecard_size(bytes_size):
+    def get_gamecard_size(self, bytes_size):
         """
         Determine appropriate gamecard size and firmware version based on content size.
         
@@ -1195,8 +1246,7 @@ class XCIGenerator:
 
         return 0xFA, "1100a100"
 
-    @staticmethod
-    def get_encrypted_gameinfo(bytes_size):
+    def get_encrypted_gameinfo(self, bytes_size):
         """
         Generate encrypted gamecard information structure.
         
@@ -1267,8 +1317,7 @@ class XCIGenerator:
         game_info += params["empty2"].to_bytes(56, byteorder="big")
         return game_info
 
-    @staticmethod
-    def generate_xci_header(file_list, file_sizes, hash_list):
+    def generate_xci_header(self, file_list, file_sizes, hash_list):
         """
         Generate complete XCI header structure with all required components.
         
@@ -1293,13 +1342,13 @@ class XCIGenerator:
             Complete XCI header bytes ready for writing
         """
         # Generate partition headers
-        upd_header, upd_size, upd_multiplier = HeaderGenerator.generate_hfs0_header(
+        upd_header, upd_size, upd_multiplier = self.header_gen.generate_hfs0_header(
             [], [], []
         )
-        norm_header, norm_size, norm_multiplier = HeaderGenerator.generate_hfs0_header(
+        norm_header, norm_size, norm_multiplier = self.header_gen.generate_hfs0_header(
             [], [], []
         )
-        sec_header, sec_size, sec_multiplier = HeaderGenerator.generate_hfs0_header(
+        sec_header, sec_size, sec_multiplier = self.header_gen.generate_hfs0_header(
             file_list, file_sizes, hash_list
         )
 
@@ -1318,14 +1367,14 @@ class XCIGenerator:
             SHA256.new(sec_header).hexdigest(),
         ]
 
-        root_header, root_size, root_multiplier = HeaderGenerator.generate_hfs0_header(
+        root_header, root_size, root_multiplier = self.header_gen.generate_hfs0_header(
             root_list, root_file_sizes, root_hash_list, root_hreg
         )
 
         tot_size = Config.XCI_HEADER_OFFSET + root_size
 
         # Generate XCI header components
-        signature = bytes.fromhex(XCIGenerator.generate_random_hex(0x100))
+        signature = bytes.fromhex(self.generate_random_hex(0x100))
 
         sec_offset = root_header[0x90:0x98]
         sec_offset = int.from_bytes(sec_offset, byteorder="little")
@@ -1334,7 +1383,7 @@ class XCIGenerator:
 
         back_offset = (0xFFFFFFFF).to_bytes(4, byteorder="little")
         kek = (0x00).to_bytes(1, byteorder="big")
-        cardsize, access_freq = XCIGenerator.get_gamecard_size(tot_size)
+        cardsize, access_freq = self.get_gamecard_size(tot_size)
         cardsize = cardsize.to_bytes(1, byteorder="big")
         gc_ver = (0x00).to_bytes(1, byteorder="big")
         gc_flag = (0x00).to_bytes(1, byteorder="big")
@@ -1375,7 +1424,7 @@ class XCIGenerator:
         header += k_flag
         header += end_norm
 
-        enc_info = XCIGenerator.get_encrypted_gameinfo(tot_size)
+        enc_info = self.get_encrypted_gameinfo(tot_size)
         sig_padding = bytes(0x6E00)
         fake_cert = bytes(0x8000)
 
@@ -1409,9 +1458,14 @@ class FileUtils:
     large Nintendo Switch files (up to 32GB).
     """
 
-    @staticmethod
+    def __init__(self):
+        """
+        Initialize FileUtils.
+        """
+        pass
+
     def copy_file_content(
-        src_path, dst_file, offset, size, buffer_size=Config.BUFFER_SIZE
+        self, src_path, dst_file, offset, size, buffer_size=Config.BUFFER_SIZE
     ):
         """
         Copy specific portion of file content using streaming I/O.
@@ -1439,8 +1493,7 @@ class FileUtils:
                 dst_file.write(chunk)
                 remaining -= len(chunk)
 
-    @staticmethod
-    def cleanup_temp_files(temp_files):
+    def cleanup_temp_files(self, temp_files):
         """
         Clean up temporary files and empty directories.
         
@@ -1464,8 +1517,7 @@ class FileUtils:
             except Exception:
                 pass  # Ignore cleanup errors
 
-    @staticmethod
-    def set_nca_gamecard_flag(nca_path):
+    def set_nca_gamecard_flag(self, nca_path):
         """
         Set gamecard flag in NCA header for XCI compatibility.
         
@@ -1488,8 +1540,7 @@ class FileUtils:
         except Exception:
             pass  # Ignore errors for read-only files
 
-    @staticmethod
-    def decompress_file(filepath, buffer_size=Config.BUFFER_SIZE):
+    def decompress_file(self, filepath, buffer_size=Config.BUFFER_SIZE):
         """
         Decompress a compressed Nintendo Switch file format.
         
@@ -1512,10 +1563,12 @@ class FileUtils:
 
         if filepath.endswith(".nsz"):
             temp_file = os.path.join(temp_dir, basename[:-1] + "p")
-            CompressionHandler.decompress_nsz(filepath, temp_file, buffer_size)
+            compression_handler = CompressionHandler()
+            compression_handler.decompress_nsz(filepath, temp_file, buffer_size)
         elif filepath.endswith(".ncz"):
             temp_file = os.path.join(temp_dir, basename[:-1] + "a")
-            if CompressionHandler.decompress_ncz(filepath, temp_file):
+            compression_handler = CompressionHandler()
+            if compression_handler.decompress_ncz(filepath, temp_file):
                 return temp_file
             else:
                 return filepath
@@ -1539,8 +1592,7 @@ class Acorn:
     and proper handling of large Nintendo Switch content files.
     """
     
-    @staticmethod
-    def get_ascii_banner():
+    def get_ascii_banner(self):
         """
         Generate ASCII art banner for application branding.
         
@@ -1554,6 +1606,29 @@ class Acorn:
         Initialize ACORN application with argument parser.
         """
         self.parser = self._create_argument_parser()
+        self.progress_callback = None
+    
+    def set_progress_callback(self, callback):
+        """
+        Set a callback function to receive progress updates.
+        
+        Args:
+            callback: Function that accepts a string message
+        """
+        self.progress_callback = callback
+    
+    def _print(self, message):
+        """
+        Print message to console or send to callback if available.
+        
+        Args:
+            message: Message to print/send
+        """
+        if self.progress_callback:
+            self.progress_callback(message + "\n")
+        else:
+            print(message)
+            sys.stdout.flush()
 
     def _create_argument_parser(self):
         """
@@ -1614,11 +1689,12 @@ class Acorn:
             return self._handle_multi_xci_creation(args)
         except Exception as e:
             try:
-                print(f"Error: {e}")
+                self._print(f"Error: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error: {safe_error}")
-            traceback.print_exc()
+                self._print(f"Error: {safe_error}")
+            if not self.progress_callback:
+                traceback.print_exc()
             return 1
 
     def _get_output_folder(self, args):
@@ -1650,10 +1726,10 @@ class Acorn:
                         file_list.append(line)
         except Exception as e:
             try:
-                print(f"Error reading manifest file: {e}")
+                self._print(f"Error reading manifest file: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error reading manifest file: {safe_error}")
+                self._print(f"Error reading manifest file: {safe_error}")
         return file_list
 
 
@@ -1667,7 +1743,7 @@ class Acorn:
         else:
             file_list = [f for f in args.files if os.path.exists(f)]
             if not file_list:
-                print("No valid input files found")
+                self._print("No valid input files found")
                 return 1
 
         ofolder = self._get_output_folder(args)
@@ -1687,7 +1763,8 @@ class Acorn:
             temp_files = []
 
             for filepath in file_list:
-                processed_file = FileUtils.decompress_file(filepath, args.buffer)
+                file_utils = FileUtils()
+                processed_file = file_utils.decompress_file(filepath, args.buffer)
                 processed_files.append(processed_file)
                 if processed_file != filepath:
                     temp_files.append(processed_file)
@@ -1699,12 +1776,12 @@ class Acorn:
                 output_dir = os.path.dirname(outfile)
                 outfile = os.path.join(output_dir, filename + ".xci")
                 try:
-                    print(f"Filename: {filename}.xci")
+                    self._print(f"Filename: {filename}.xci")
                 except UnicodeEncodeError:
                     # Handle Unicode characters in console output
                     safe_filename = filename.encode('ascii', errors='replace').decode('ascii')
-                    print(f"Filename: {safe_filename}.xci")
-                    print("Warning: Some Unicode characters were replaced in console output")
+                    self._print(f"Filename: {safe_filename}.xci")
+                    self._print("Warning: Some Unicode characters were replaced in console output")
 
             # Phase 3: Content Analysis
             all_files = []
@@ -1737,7 +1814,7 @@ class Acorn:
 
             # Generate file hashes
             sec_hashlist = []
-            print("Calculating SHA256 hashes for NCA files...")
+            self._print("Calculating SHA256 hashes for NCA files...")
 
             for filename in all_files:
                 if filename in ["0", "00", "000"]:
@@ -1778,29 +1855,30 @@ class Acorn:
                 sec_hashlist.append(sha)
                 if sha != "0" * 64:
                     try:
-                        print(f"  {filename}: {sha[:16]}...")
+                        self._print(f"  {filename}: {sha[:16]}...")
                     except UnicodeEncodeError:
                         safe_filename = filename.encode('ascii', errors='replace').decode('ascii')
-                        print(f"  {safe_filename}: {sha[:16]}...")
+                        self._print(f"  {safe_filename}: {sha[:16]}...")
 
             # Generate XCI header
-            header_components = XCIGenerator.generate_xci_header(
+            xci_generator = XCIGenerator()
+            header_components = xci_generator.generate_xci_header(
                 all_files, all_sizes, sec_hashlist
             )
 
             # Write XCI file
             with open(outfile, "wb") as xci_file:
                 try:
-                    print(f"Writing XCI header to {outfile}...")
+                    self._print(f"Writing XCI header to {outfile}...")
                 except UnicodeEncodeError:
                     safe_outfile = outfile.encode('ascii', errors='replace').decode('ascii')
-                    print(f"Writing XCI header to {safe_outfile}...")
+                    self._print(f"Writing XCI header to {safe_outfile}...")
 
                 # Write header components
                 for component in header_components[:8]:
                     xci_file.write(component)
 
-                print("XCI header written successfully, now writing content files...")
+                self._print("XCI header written successfully, now writing content files...")
 
                 # Create file mapping
                 file_mapping = {}
@@ -1842,7 +1920,8 @@ class Acorn:
                             with open(temp_nca, "wb") as nca_file:
                                 nca_file.write(nca_data)
 
-                        FileUtils.set_nca_gamecard_flag(temp_nca)
+                        file_utils = FileUtils()
+                        file_utils.set_nca_gamecard_flag(temp_nca)
 
                         with open(temp_nca, "rb") as nca_file:
                             while True:
@@ -1862,7 +1941,8 @@ class Acorn:
 
                         shutil.copy2(file_info["source_file"], temp_nca)
 
-                        FileUtils.set_nca_gamecard_flag(temp_nca)
+                        file_utils = FileUtils()
+                        file_utils.set_nca_gamecard_flag(temp_nca)
 
                         with open(temp_nca, "rb") as nca_file:
                             while True:
@@ -1877,26 +1957,29 @@ class Acorn:
                             pass
 
             try:
-                print(f"XCI file creation completed successfully: {outfile}")
+                self._print(f"XCI file creation completed successfully: {outfile}")
             except UnicodeEncodeError:
                 safe_outfile = outfile.encode('ascii', errors='replace').decode('ascii')
-                print(f"XCI file creation completed successfully: {safe_outfile}")
+                self._print(f"XCI file creation completed successfully: {safe_outfile}")
 
             if temp_files:
-                FileUtils.cleanup_temp_files(temp_files)
+                file_utils = FileUtils()
+                file_utils.cleanup_temp_files(temp_files)
 
             return True
 
         except Exception as e:
             try:
-                print(f"Error creating XCI file: {str(e)}")
+                self._print(f"Error creating XCI file: {str(e)}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error creating XCI file: {safe_error}")
-            traceback.print_exc()
+                self._print(f"Error creating XCI file: {safe_error}")
+            if not self.progress_callback:
+                traceback.print_exc()
 
             if "temp_files" in locals() and temp_files:
-                FileUtils.cleanup_temp_files(temp_files)
+                file_utils = FileUtils()
+                file_utils.cleanup_temp_files(temp_files)
             return False
 
     def _generate_multi_filename(self, file_list):
@@ -2003,10 +2086,10 @@ class Acorn:
             
         except Exception as e:
             try:
-                print(f"Error generating filename: {e}")
+                self._print(f"Error generating filename: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error generating filename: {safe_error}")
+                self._print(f"Error generating filename: {safe_error}")
             return None
     
     def _extract_title_from_nca(self, filepath):
@@ -2036,10 +2119,10 @@ class Acorn:
             
         except Exception as e:
             try:
-                print(f"Error extracting title from NCA: {e}")
+                self._print(f"Error extracting title from NCA: {e}")
             except UnicodeEncodeError:
                 safe_error = str(e).encode('ascii', errors='replace').decode('ascii')
-                print(f"Error extracting title from NCA: {safe_error}")
+                self._print(f"Error extracting title from NCA: {safe_error}")
             return None
     
     def _extract_title_from_control_nca(self, nca_data):
@@ -2151,9 +2234,11 @@ class Acorn:
         return filename
 
 
-def create_multi_xci(files, output_folder=None, text_file=None, buffer_size=None):
+def create_multi_xci(files, output_folder=None, text_file=None, buffer_size=None, progress_callback=None):
     """Create a multi-content XCI file from a list of files."""
     app = Acorn()
+    if progress_callback:
+        app.set_progress_callback(progress_callback)
     args = [
         '--ofolder', output_folder or '.',
         '--buffer', str(buffer_size or Config.BUFFER_SIZE)
@@ -2167,7 +2252,7 @@ def create_multi_xci(files, output_folder=None, text_file=None, buffer_size=None
 def main():
     """Main entry point"""
     app = Acorn()
-    print(app.get_ascii_banner() + "\n")
+    app._print(app.get_ascii_banner() + "\n")
     return app.run()
 
 

@@ -978,9 +978,9 @@ class CompressionHandler:
         try:
             with open(input_path, "rb") as f:
                 header = f.read(0x4000)
-                ncz_section = NCZSection()
-                magic = ncz_section._read_int64(f)
-                section_count = ncz_section._read_int64(f)
+                # Read magic and section count directly
+                magic = int.from_bytes(f.read(8), byteorder="little")
+                section_count = int.from_bytes(f.read(8), byteorder="little")
                 sections = [NCZSection(f) for _ in range(section_count)]
 
                 dctx = zstandard.ZstdDecompressor()

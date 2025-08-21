@@ -167,6 +167,7 @@ cython_debug/
 .kiro
 .void
 .windsurf
+ztools/
 
 # Nintendo stuff
 keys.txt

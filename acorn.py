@@ -57,7 +57,7 @@ def load_keys(key_path='prod.keys'):
                     for line in f:
                         if '=' in line and not line.startswith('#'):
                             k, v = line.strip().split('=', 1)
-                            keys[k] = bytes.fromhex(v)
+                            keys[k.strip()] = bytes.fromhex(v.strip())
                 print(f"Loaded {len(keys)} keys from {path}")
                 return True
             except Exception as e:
@@ -1663,9 +1663,11 @@ class NCAHandler:
     
     def __init__(self):
         """Initialize NCA handler with required constants."""
-        self.HEADER_KEY = bytes.fromhex(
-            "aeaab1ca08adf9bef12991f369e3c567d6881e4e4a6a47a51f6e4877062d542d"
-        )
+        # Use header_key from prod.keys file - NO hardcoded keys
+        if 'header_key' in keys and keys['header_key']:
+            self.HEADER_KEY = keys['header_key']
+        else:
+            raise ValueError("header_key not found in prod.keys file. Cannot proceed without valid keys.")
     
     def decrypt_ticket_title_key(self, tik_path):
         """Decrypt title key from ticket file."""
@@ -1955,19 +1957,22 @@ class Acorn:
                 if processed_file != filepath:
                     temp_files.append(processed_file)
 
-            # Phase 2: Generate proper filename from metadata
-            filename = self._generate_multi_filename(processed_files)
+            # Phase 2: Deduplicate files by title ID to avoid processing duplicates
+            deduplicated_files = self._deduplicate_files(processed_files)
+            
+            # Phase 3: Generate proper filename from metadata
+            filename = self._generate_multi_filename(deduplicated_files)
             if filename:
                 # Use the generated filename
                 output_dir = os.path.dirname(outfile) or '.'
                 outfile = os.path.join(output_dir, filename + ".xci")
                 self._print(f"Output: {filename}.xci")
 
-            # Phase 3: Content Analysis
+            # Phase 4: Content Analysis
             all_files = []
             all_sizes = []
 
-            for filepath in processed_files:
+            for filepath in deduplicated_files:
                 if filepath.endswith(".nsp"):
                     try:
                         nsp = NSPHandler(filepath)
@@ -2004,7 +2009,7 @@ class Acorn:
 
                 sha = "0" * 64  # Default SHA-256 hash for missing/invalid files
 
-                for filepath in processed_files:
+                for filepath in deduplicated_files:
                     if filepath.endswith(".nsp"):
                         try:
                             nsp = NSPHandler(filepath)
@@ -2075,7 +2080,7 @@ class Acorn:
 
                 # Create file mapping
                 file_mapping = {}
-                for filepath in processed_files:
+                for filepath in deduplicated_files:
                     if filepath.endswith(".nsp"):
                         nsp = NSPHandler(filepath)
                         for file_entry in nsp.files:
@@ -2280,13 +2285,44 @@ class Acorn:
                 file_utils.cleanup_temp_files(temp_files)
             return False
 
+    def _deduplicate_files(self, file_list):
+        """Deduplicate files by title ID to avoid processing duplicates"""
+        seen_title_ids = set()
+        deduplicated = []
+        
+        for filepath in file_list:
+            if filepath.endswith(".nsp"):
+                try:
+                    # Extract title ID from filename
+                    basename = os.path.basename(filepath)
+                    import re
+                    tid_match = re.search(r"\[([0-9A-Fa-f]{16})\]", basename)
+                    if tid_match:
+                        titleid = tid_match.group(1).upper()
+                        if titleid not in seen_title_ids:
+                            seen_title_ids.add(titleid)
+                            deduplicated.append(filepath)
+                        else:
+                            self._print(f"Skipping duplicate file: {basename} (title ID: {titleid})")
+                    else:
+                        # If we can't extract title ID, include the file
+                        deduplicated.append(filepath)
+                except Exception:
+                    # If there's an error, include the file
+                    deduplicated.append(filepath)
+            else:
+                # For non-NSP files, include them
+                deduplicated.append(filepath)
+        
+        return deduplicated
+
     def _generate_multi_filename(self, file_list):
         """Generate filename based on game metadata like squirrel.py"""
         try:
             # Analyze content to build filename
-            basecount = 0
-            updcount = 0
-            dlccount = 0
+            base_ids = set()
+            upd_ids = set()
+            dlc_ids = set()
             baseid = ""
             updid = ""
             dlcid = ""
@@ -2325,21 +2361,21 @@ class Acorn:
                                     # Determine content type based on title ID
                                     if titleid.endswith("000"):
                                         # Base game content (main application)
-                                        basecount += 1
+                                        base_ids.add(titleid)
                                         if baseid == "":
                                             baseid = titleid
                                             basever = f"[v{version}]"
                                             basefile = filepath
                                     elif titleid.endswith("800"):
                                         # Update
-                                        updcount += 1
+                                        upd_ids.add(titleid)
                                         if updid == "":
                                             updid = titleid
                                             updver = f"[v{version}]"
                                             updfile = filepath
                                     else:
                                         # Downloadable content (DLC)
-                                        dlccount += 1
+                                        dlc_ids.add(titleid)
                                         if dlcid == "":
                                             dlcid = titleid
                                             dlcver = f"[v{version}]"
@@ -2348,7 +2384,11 @@ class Acorn:
                     except Exception:
                         pass
 
-            # Generate content count tag
+            # Generate content count tag using unique title IDs
+            basecount = len(base_ids)
+            updcount = len(upd_ids)
+            dlccount = len(dlc_ids)
+            
             bctag = f"{basecount}G" if basecount != 0 else ""
             updtag = (
                 f"+{updcount}U"

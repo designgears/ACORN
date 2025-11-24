@@ -30,7 +30,10 @@ import random
 import struct
 import sys
 import tempfile
+import time
 import traceback
+import uuid
+import gc
 from struct import pack as pk
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
@@ -69,6 +72,32 @@ def load_keys(key_path='prod.keys'):
 
 # Load keys at startup
 load_keys()
+
+# Session-based temporary directory management
+_session_uuid = str(uuid.uuid4())
+_script_dir = os.path.dirname(os.path.abspath(__file__)) if not getattr(sys, 'frozen', False) else os.path.dirname(sys.executable)
+_emu_base_dir = os.path.dirname(_script_dir)  # Parent directory (EmuRomManager root)
+_session_temp_dir = os.path.join(_emu_base_dir, "temp", _session_uuid)
+_default_output_dir = os.path.join(_emu_base_dir, "output")
+
+def get_session_temp_dir():
+    """Get the session-specific temporary directory."""
+    os.makedirs(_session_temp_dir, exist_ok=True)
+    return _session_temp_dir
+
+def get_default_output_dir():
+    """Get the default output directory, creating if needed."""
+    os.makedirs(_default_output_dir, exist_ok=True)
+    return _default_output_dir
+
+def cleanup_session_temp():
+    """Clean up session temporary directory."""
+    try:
+        if os.path.exists(_session_temp_dir):
+            import shutil
+            shutil.rmtree(_session_temp_dir)
+    except Exception:
+        pass
 
 
 class Config:
@@ -853,6 +882,8 @@ class NSPHandler:
                 content_type = cnmt_data[entry_offset + 0x36]
 
                 content_size = struct.unpack("<Q", size_bytes + b"\x00\x00")[0]
+                # Apply 48-bit mask to match the other CNMT parser and prevent overflow
+                content_size = content_size & 0xFFFFFFFFFFFF
 
                 filename = f"{nca_id}.{'cnmt.' if content_type == 0 else ''}nca"
                 content_sizes[filename] = content_size
@@ -1119,30 +1150,24 @@ class CompressionHandler:
                     name, start_offset, end_offset, size = file_info
 
                     if name.endswith(".ncz"):
-                        temp_ncz = tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".ncz"
-                        )
-                        temp_ncz.close()
-                        temp_files.append(temp_ncz.name)
+                        temp_ncz_path = os.path.join(get_session_temp_dir(), f"temp_{int(time.time() * 1000000)}_{name}")
+                        temp_files.append(temp_ncz_path)
 
                         f.seek(start_offset)
                         ncz_data = f.read(size)
 
-                        with open(temp_ncz.name, "wb") as temp_f:
+                        with open(temp_ncz_path, "wb") as temp_f:
                             temp_f.write(ncz_data)
 
-                        temp_nca = tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".nca"
-                        )
-                        temp_nca.close()
-                        temp_files.append(temp_nca.name)
+                        temp_nca_path = os.path.join(get_session_temp_dir(), f"temp_{int(time.time() * 1000000)}_{name.replace('.ncz', '.nca')}")
+                        temp_files.append(temp_nca_path)
 
-                        if self.decompress_ncz(temp_ncz.name, temp_nca.name):
-                            decompressed_size = os.path.getsize(temp_nca.name)
+                        if self.decompress_ncz(temp_ncz_path, temp_nca_path):
+                            decompressed_size = os.path.getsize(temp_nca_path)
                             nca_files.append(
                                 (
                                     name.replace(".ncz", ".nca"),
-                                    temp_nca.name,
+                                    temp_nca_path,
                                     decompressed_size,
                                     True,
                                 )
@@ -1398,7 +1423,8 @@ class XCIGenerator:
         root_hreg = [
             (0x200 * upd_multiplier).to_bytes(4, byteorder="little"),
             (0x200 * norm_multiplier).to_bytes(4, byteorder="little"),
-            sec_size.to_bytes(4, byteorder="little"),  # Secure partition hash covers entire partition
+            # Hash region size is limited to 32-bit, use max if sec_size is too large
+            min(sec_size, 0xFFFFFFFF).to_bytes(4, byteorder="little"),  # Secure partition hash covers entire partition
         ]
 
         root_list = ["update", "normal", "secure"]
@@ -1435,7 +1461,8 @@ class XCIGenerator:
 
         iv = (0x5B408B145E277E81E5BF677C94888D7B).to_bytes(16, byteorder="big")
         hfs0_offset = (Config.XCI_HEADER_OFFSET).to_bytes(8, byteorder="little")
-        len_rhfs0 = (len(root_header)).to_bytes(8, byteorder="little")
+        len_rhfs0 = len(root_header)
+        len_rhfs0 = len_rhfs0.to_bytes(8, byteorder="little")
         sha_rheader = SHA256(root_header[0x00:0x200]).digest()
         sha_ini_data = bytes.fromhex(
             "1AB7C7B263E74E44CD3C68E40F7EF4A4D6571551D043FCA8ECF5C489F2C66E7E"
@@ -1611,7 +1638,7 @@ class FileUtils:
         except Exception:
             pass  # Ignore errors for read-only files
 
-    def decompress_file(self, filepath, buffer_size=Config.BUFFER_SIZE):
+    def decompress_file(self, filepath, buffer_size=Config.BUFFER_SIZE, compression_handler=None):
         """
         Decompress a compressed Nintendo Switch file format.
 
@@ -1629,16 +1656,18 @@ class FileUtils:
         if not filepath.endswith((".nsz", ".xcz", ".ncz")):
             return filepath
 
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = get_session_temp_dir()
         basename = os.path.basename(filepath)
+
+        # Create compression handler only if not provided
+        if compression_handler is None:
+            compression_handler = CompressionHandler()
 
         if filepath.endswith(".nsz"):
             temp_file = os.path.join(temp_dir, basename[:-1] + "p")
-            compression_handler = CompressionHandler()
             compression_handler.decompress_nsz(filepath, temp_file, buffer_size)
         elif filepath.endswith(".ncz"):
             temp_file = os.path.join(temp_dir, basename[:-1] + "a")
-            compression_handler = CompressionHandler()
             if compression_handler.decompress_ncz(filepath, temp_file):
                 return temp_file
             else:
@@ -1946,50 +1975,65 @@ class Acorn:
     def _create_multi_xci(self, file_list, outfile, args):
         """Create multi-XCI file"""
         try:
-            # Phase 1: Decompression
+            # Phase 1: Decompression - Optimize memory usage
             processed_files = []
             temp_files = []
+            
+            # Create single instances to reuse
+            file_utils = FileUtils()
+            compression_handler = CompressionHandler()
 
             for filepath in file_list:
-                file_utils = FileUtils()
-                processed_file = file_utils.decompress_file(filepath, args.buffer)
+                processed_file = file_utils.decompress_file(filepath, args.buffer, compression_handler)
                 processed_files.append(processed_file)
                 if processed_file != filepath:
                     temp_files.append(processed_file)
 
-            # Phase 2: Deduplicate files by title ID to avoid processing duplicates
-            deduplicated_files = self._deduplicate_files(processed_files)
+            # Phase 2: Generate proper filename from metadata
+            # Clean up decompression objects to free memory
+            del file_utils
+            del compression_handler
+            gc.collect()
             
-            # Phase 3: Generate proper filename from metadata
-            filename = self._generate_multi_filename(deduplicated_files)
+            filename = self._generate_multi_filename(processed_files)
             if filename:
                 # Use the generated filename
                 output_dir = os.path.dirname(outfile) or '.'
                 outfile = os.path.join(output_dir, filename + ".xci")
                 self._print(f"Output: {filename}.xci")
 
-            # Phase 4: Content Analysis
+            # Phase 3: Content Analysis - Process files sequentially to save memory
             all_files = []
             all_sizes = []
 
-            for filepath in deduplicated_files:
+            for filepath in processed_files:
                 if filepath.endswith(".nsp"):
                     try:
                         nsp = NSPHandler(filepath)
                         content_sizes = nsp.get_cnmt_content_sizes()
-                    except Exception:
-                        content_sizes = {}
-
-                    for file_entry in nsp.files:
-                        if file_entry["name"].endswith((".nca", ".tik", ".cert")):
-                            all_files.append(file_entry["name"])
-                            if file_entry["name"] in content_sizes:
-                                all_sizes.append(content_sizes[file_entry["name"]])
-                            else:
-                                all_sizes.append(file_entry["size"])
+                        
+                        for file_entry in nsp.files:
+                            if file_entry["name"].endswith((".nca", ".tik", ".cert")):
+                                all_files.append(file_entry["name"])
+                                if file_entry["name"] in content_sizes:
+                                    all_sizes.append(content_sizes[file_entry["name"]])
+                                else:
+                                    all_sizes.append(file_entry["size"])
+                        
+                        # Explicitly close NSP handler to free memory
+                        del nsp
+                    except Exception as e:
+                        try:
+                            self._print(f"Warning: Failed to process NSP file {filepath}: {e}")
+                        except UnicodeEncodeError:
+                            safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
+                            self._print(f"Warning: Failed to process NSP file {filepath}: {safe_error}")
                 elif filepath.endswith((".nca", ".tik", ".cert")):
                     all_files.append(os.path.basename(filepath))
                     all_sizes.append(os.path.getsize(filepath))
+
+            # Strategic garbage collection after content analysis phase
+            gc.collect()
 
             # Add dummy files if needed
             while len(all_files) <= 3:
@@ -2009,7 +2053,7 @@ class Acorn:
 
                 sha = "0" * 64  # Default SHA-256 hash for missing/invalid files
 
-                for filepath in deduplicated_files:
+                for filepath in processed_files:
                     if filepath.endswith(".nsp"):
                         try:
                             nsp = NSPHandler(filepath)
@@ -2023,6 +2067,8 @@ class Acorn:
                                         if len(header_block) == 0x200:
                                             sha = SHA256(header_block).hexdigest()
                                     break
+                            # Explicitly close NSP handler to free memory
+                            del nsp
                         except Exception:
                             pass
                     elif (
@@ -2046,6 +2092,9 @@ class Acorn:
                             "ascii", errors="replace"
                         ).decode("ascii")
                         self._print(f"  {safe_filename}: {sha[:16]}...")
+
+            # Strategic garbage collection after hash generation phase
+            gc.collect()
 
             # Generate XCI header (without partition hash for now)
             xci_generator = XCIGenerator()
@@ -2080,17 +2129,26 @@ class Acorn:
 
                 # Create file mapping
                 file_mapping = {}
-                for filepath in deduplicated_files:
+                for filepath in processed_files:
                     if filepath.endswith(".nsp"):
-                        nsp = NSPHandler(filepath)
-                        for file_entry in nsp.files:
-                            if file_entry["name"].endswith((".nca", ".tik", ".cert")):
-                                file_mapping[file_entry["name"]] = {
-                                    "source_file": filepath,
-                                    "offset": file_entry["offset"],
-                                    "size": file_entry["size"],
-                                    "type": "nsp",
-                                }
+                        try:
+                            nsp = NSPHandler(filepath)
+                            for file_entry in nsp.files:
+                                if file_entry["name"].endswith((".nca", ".tik", ".cert")):
+                                    file_mapping[file_entry["name"]] = {
+                                        "source_file": filepath,
+                                        "offset": file_entry["offset"],
+                                        "size": file_entry["size"],
+                                        "type": "nsp",
+                                    }
+                            # Explicitly close NSP handler to free memory
+                            del nsp
+                        except Exception as e:
+                            try:
+                                self._print(f"Warning: Failed to process NSP file for mapping {filepath}: {e}")
+                            except UnicodeEncodeError:
+                                safe_error = str(e).encode("ascii", errors="replace").decode("ascii")
+                                self._print(f"Warning: Failed to process NSP file for mapping {filepath}: {safe_error}")
                     elif filepath.endswith((".nca", ".tik", ".cert")):
                         filename = os.path.basename(filepath)
                         file_mapping[filename] = {
@@ -2111,7 +2169,7 @@ class Acorn:
                     file_info = file_mapping[filename]
 
                     if file_info["type"] == "nsp":
-                        temp_nca = os.path.join(tempfile.gettempdir(), filename)
+                        temp_nca = os.path.join(get_session_temp_dir(), filename)
                         
                         # Only process NCAs with tickets
                         if filename.endswith('.nca'):
@@ -2122,7 +2180,7 @@ class Acorn:
                                 tik_offset = file_mapping[tik_filename]['offset']
                                 
                                 # Extract ticket to temp file
-                                temp_tik = os.path.join(tempfile.gettempdir(), tik_filename)
+                                temp_tik = os.path.join(get_session_temp_dir(), tik_filename)
                                 with open(file_info["source_file"], "rb") as nsp_file:
                                     nsp_file.seek(file_info["offset"])
                                     nca_data = nsp_file.read(file_info["size"])
@@ -2181,7 +2239,7 @@ class Acorn:
                             pass
 
                     elif file_info["type"] == "nca":
-                        temp_nca = os.path.join(tempfile.gettempdir(), filename)
+                        temp_nca = os.path.join(get_session_temp_dir(), filename)
                         import shutil
 
                         shutil.copy2(file_info["source_file"], temp_nca)
@@ -2190,7 +2248,7 @@ class Acorn:
                         tik_filename = filename.replace('.nca', '.tik')
                         if tik_filename in file_mapping:
                             tik_info = file_mapping[tik_filename]
-                            temp_tik = os.path.join(tempfile.gettempdir(), tik_filename)
+                            temp_tik = os.path.join(get_session_temp_dir(), tik_filename)
                             
                             # Extract ticket
                             with open(tik_info["source_file"], "rb") as nsp_file:
@@ -2280,41 +2338,6 @@ class Acorn:
             if not self.progress_callback:
                 traceback.print_exc()
 
-            if "temp_files" in locals() and temp_files:
-                file_utils = FileUtils()
-                file_utils.cleanup_temp_files(temp_files)
-            return False
-
-    def _deduplicate_files(self, file_list):
-        """Deduplicate files by title ID to avoid processing duplicates"""
-        seen_title_ids = set()
-        deduplicated = []
-        
-        for filepath in file_list:
-            if filepath.endswith(".nsp"):
-                try:
-                    # Extract title ID from filename
-                    basename = os.path.basename(filepath)
-                    import re
-                    tid_match = re.search(r"\[([0-9A-Fa-f]{16})\]", basename)
-                    if tid_match:
-                        titleid = tid_match.group(1).upper()
-                        if titleid not in seen_title_ids:
-                            seen_title_ids.add(titleid)
-                            deduplicated.append(filepath)
-                        else:
-                            self._print(f"Skipping duplicate file: {basename} (title ID: {titleid})")
-                    else:
-                        # If we can't extract title ID, include the file
-                        deduplicated.append(filepath)
-                except Exception:
-                    # If there's an error, include the file
-                    deduplicated.append(filepath)
-            else:
-                # For non-NSP files, include them
-                deduplicated.append(filepath)
-        
-        return deduplicated
 
     def _generate_multi_filename(self, file_list):
         """Generate filename based on game metadata like squirrel.py"""

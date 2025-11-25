@@ -8,6 +8,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+acorn_temp/
 build/
 develop-eggs/
 dist/

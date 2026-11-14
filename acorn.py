@@ -1090,16 +1090,23 @@ class CompressionHandler:
                 sections = [NCZSection(f) for _ in range(section_count)]
 
                 dctx = zstandard.ZstdDecompressor()
-                reader = dctx.stream_reader(f)
+                block_magic = f.read(8)
+                is_block = block_magic == b"NCZBLOCK"
+                if not is_block:
+                    f.seek(-len(block_magic), 1)
 
                 with open(output_path, "wb+") as o:
                     o.write(header)
 
-                    while True:
-                        chunk = reader.read(16384)
-                        if not chunk:
-                            break
-                        o.write(chunk)
+                    if is_block:
+                        self._decompress_ncz_blocks(f, o, dctx)
+                    else:
+                        reader = dctx.stream_reader(f)
+                        while True:
+                            chunk = reader.read(16384)
+                            if not chunk:
+                                break
+                            o.write(chunk)
 
                     for section in sections:
                         if section.crypto_type == 1:
@@ -1116,6 +1123,31 @@ class CompressionHandler:
         except Exception as e:
             self._print(f"Error decompressing NCZ {input_path}: {e}")
             return False
+
+    def _decompress_ncz_blocks(self, f, o, dctx):
+        """
+        Decompress block-mode NCZ data (NCZBLOCK header, as made by `nsz -B`).
+
+        Layout after the magic: version(u8), type(u8), unused(u8),
+        block size exponent(u8), block count(u32), decompressed size(u64),
+        then one u32 compressed size per block. A block whose compressed size
+        is not smaller than its decompressed size is stored raw.
+        """
+        _version, _type, _unused, exponent = f.read(4)
+        block_count = struct.unpack("<I", f.read(4))[0]
+        remaining = struct.unpack("<Q", f.read(8))[0]
+        block_sizes = struct.unpack(f"<{block_count}I", f.read(4 * block_count))
+        block_size = 1 << exponent
+
+        for compressed_size in block_sizes:
+            expected = min(block_size, remaining)
+            data = f.read(compressed_size)
+            if compressed_size < expected:
+                data = dctx.decompress(data, max_output_size=expected)
+            if len(data) != expected:
+                raise IOError("NCZ block size mismatch")
+            o.write(data)
+            remaining -= expected
 
     def _decrypt_section(self, file_handle, crypto, offset, size):
         """
@@ -1169,9 +1201,15 @@ class CompressionHandler:
         try:
             self._print(f"Decompressing NSZ: {input_path} -> {output_path}")
 
-            files_list = self.file_parser.parse_pfs0_offsets(input_path)
+            # NSPHandler reads both NSZ (PFS0) and XCZ (XCI secure partition).
+            # Either way the result is written as an NSP of plain NCAs.
+            files_list = [
+                [e["name"], e["offset"], e["offset"] + e["size"], e["size"]]
+                for e in NSPHandler(input_path).files
+                if e["size"] > 0
+            ]
             if not files_list:
-                self._print("Failed to parse NSP structure")
+                self._print("Failed to parse container structure")
                 return False
 
             nca_files = []
@@ -1696,16 +1734,16 @@ class FileUtils:
         if compression_handler is None:
             compression_handler = CompressionHandler()
 
-        if filepath.endswith(".nsz"):
-            temp_file = os.path.join(temp_dir, basename[:-1] + "p")
-            compression_handler.decompress_nsz(filepath, temp_file, buffer_size)
-        elif filepath.endswith(".ncz"):
+        if filepath.endswith((".nsz", ".xcz")):
+            # XCZ contents are repackaged as an NSP, which the builder reads
+            temp_file = os.path.join(temp_dir, basename[:-3] + "nsp")
+            ok = compression_handler.decompress_nsz(filepath, temp_file, buffer_size)
+        else:
             temp_file = os.path.join(temp_dir, basename[:-1] + "a")
-            if compression_handler.decompress_ncz(filepath, temp_file):
-                return temp_file
-            else:
-                return filepath
+            ok = compression_handler.decompress_ncz(filepath, temp_file)
 
+        if not ok:
+            raise RuntimeError(f"Failed to decompress {filepath}")
         return temp_file
 
 
@@ -1895,7 +1933,7 @@ class Acorn:
         parser.add_argument(
             "files",
             nargs="*",
-            help="Input NSP/XCI/NCA/NSZ/NCZ files to package into multi-XCI",
+            help="Input NSP/XCI/NCA/NSZ/XCZ/NCZ files to package into multi-XCI",
         )
         parser.add_argument(
             "-o", "--ofolder", help="Set output folder (default: current directory)"
@@ -2275,7 +2313,9 @@ class Acorn:
                         temp_nca = os.path.join(get_session_temp_dir(), filename)
                         import shutil
 
-                        shutil.copy2(file_info["source_file"], temp_nca)
+                        # Decompressed NCZs already live in the temp dir
+                        if os.path.abspath(file_info["source_file"]) != os.path.abspath(temp_nca):
+                            shutil.copy2(file_info["source_file"], temp_nca)
                         
                         # Try to find corresponding ticket
                         tik_filename = filename.replace('.nca', '.tik')

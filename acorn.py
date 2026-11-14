@@ -647,7 +647,11 @@ class NSPHandler:
         with open(self.filepath, "rb") as f:
             magic = f.read(4)
             if magic != b"PFS0":
-                raise ValueError("Invalid NSP file")
+                f.seek(0x100)
+                if f.read(4) == b"HEAD":
+                    self._parse_xci(f)
+                    return
+                raise ValueError("Invalid NSP/XCI file")
 
             file_count = struct.unpack("<I", f.read(4))[0]
             string_table_size = struct.unpack("<I", f.read(4))[0]
@@ -683,6 +687,35 @@ class NSPHandler:
                 )
 
                 f.seek(current_pos)
+
+    @staticmethod
+    def _read_hfs0(f, base):
+        """Read an HFS0 table at base; return list of {name, offset, size}."""
+        f.seek(base)
+        if f.read(4) != b"HFS0":
+            return []
+        count, st_size = struct.unpack("<II", f.read(8))
+        f.read(4)
+        entries = [struct.unpack("<QQI", f.read(Config.HFS0_ENTRY_SIZE)[:20]) for _ in range(count)]
+        f.seek(base + 0x10 + count * Config.HFS0_ENTRY_SIZE)
+        strtab = f.read(st_size)
+        data_start = base + 0x10 + count * Config.HFS0_ENTRY_SIZE + st_size
+        out = []
+        for offset, size, name_off in entries:
+            end = strtab.find(b"\x00", name_off)
+            name = strtab[name_off:end if end != -1 else None].decode("utf-8", errors="replace")
+            out.append({"name": name, "offset": data_start + offset, "size": size})
+        return out
+
+    def _parse_xci(self, f):
+        """Parse an XCI: root HFS0 (offset at 0x130) -> secure partition files."""
+        f.seek(0x130)
+        root_offset = struct.unpack("<Q", f.read(8))[0]
+        for part in self._read_hfs0(f, root_offset):
+            if part["name"] == "secure":
+                self.files = self._read_hfs0(f, part["offset"])
+                return
+        raise ValueError("XCI has no secure partition")
 
     def get_cnmt_content_sizes(self):
         """
@@ -1862,7 +1895,7 @@ class Acorn:
         parser.add_argument(
             "files",
             nargs="*",
-            help="Input NSP/NCA/NSZ/NCZ files to package into multi-XCI",
+            help="Input NSP/XCI/NCA/NSZ/NCZ files to package into multi-XCI",
         )
         parser.add_argument(
             "-o", "--ofolder", help="Set output folder (default: current directory)"
@@ -2007,7 +2040,7 @@ class Acorn:
             all_sizes = []
 
             for filepath in processed_files:
-                if filepath.endswith(".nsp"):
+                if filepath.endswith((".nsp", ".xci")):
                     try:
                         nsp = NSPHandler(filepath)
                         content_sizes = nsp.get_cnmt_content_sizes()
@@ -2054,7 +2087,7 @@ class Acorn:
                 sha = "0" * 64  # Default SHA-256 hash for missing/invalid files
 
                 for filepath in processed_files:
-                    if filepath.endswith(".nsp"):
+                    if filepath.endswith((".nsp", ".xci")):
                         try:
                             nsp = NSPHandler(filepath)
                             for file_entry in nsp.files:
@@ -2130,7 +2163,7 @@ class Acorn:
                 # Create file mapping
                 file_mapping = {}
                 for filepath in processed_files:
-                    if filepath.endswith(".nsp"):
+                    if filepath.endswith((".nsp", ".xci")):
                         try:
                             nsp = NSPHandler(filepath)
                             for file_entry in nsp.files:
@@ -2168,7 +2201,7 @@ class Acorn:
 
                     file_info = file_mapping[filename]
 
-                    if file_info["type"] == "nsp":
+                    if file_info["type"] == "nsp":  # NSP or XCI container
                         temp_nca = os.path.join(get_session_temp_dir(), filename)
                         
                         # Only process NCAs with tickets
@@ -2269,12 +2302,19 @@ class Acorn:
                             except Exception:
                                 pass
 
+                        bytes_written = 0
                         with open(temp_nca, "rb") as nca_file:
                             while True:
                                 chunk = nca_file.read(args.buffer)
                                 if not chunk:
                                     break
                                 xci_file.write(chunk)
+                                bytes_written += len(chunk)
+
+                        # Write padding for 0x200 alignment
+                        padding_size = (0x200 - (bytes_written % 0x200)) % 0x200
+                        if padding_size > 0:
+                            xci_file.write(b'\x00' * padding_size)
 
                         try:
                             os.remove(temp_nca)
@@ -2359,7 +2399,7 @@ class Acorn:
 
             # Process each file to extract metadata
             for filepath in file_list:
-                if filepath.endswith(".nsp"):
+                if filepath.endswith((".nsp", ".xci")):
                     try:
                         nsp = NSPHandler(filepath)
                         # Find CNMT file to get metadata
